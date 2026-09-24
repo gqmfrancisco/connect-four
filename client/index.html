@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect Four</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="app-shell">
+        <header class="app-header">
+            <p class="game-label">Jogo multiplayer</p>
+            <h1>CONNECT FOUR</h1>
+            <p class="subtitle">Multiplayer em tempo real com WebSocket</p>
+
+            <div class="connection-badge status-connecting" id="connection-badge">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="connection-status">Conectando...</span>
+            </div>
+        </header>
+
+        <p id="room-status" class="notice" aria-live="polite"></p>
+
+        <section id="lobby-panel" class="lobby-panel" aria-labelledby="lobby-title">
+            <h2 id="lobby-title">Entrar na partida</h2>
+
+            <div class="field-group">
+                <label for="player-name">Nome</label>
+                <input
+                    id="player-name"
+                    type="text"
+                    placeholder="Digite seu nome"
+                    autocomplete="name"
+                >
+            </div>
+
+            <button id="create-room-button" class="button button-primary" type="button">
+                Criar sala
+            </button>
+
+            <div class="divider" aria-hidden="true"><span>OU</span></div>
+
+            <div class="field-group">
+                <label for="room-code">Código da sala</label>
+                <input
+                    id="room-code"
+                    class="room-code-input"
+                    type="text"
+                    maxlength="4"
+                    placeholder="ABCD"
+                    autocomplete="off"
+                >
+            </div>
+
+            <button id="join-room-button" class="button button-secondary" type="button">
+                Entrar na sala
+            </button>
+        </section>
+
+        <section id="game-panel" class="game-panel" aria-label="Partida" hidden>
+            <div class="room-heading">
+                <span>Sala</span>
+                <strong id="room-code-display">----</strong>
+            </div>
+
+            <div class="players-row">
+                <article id="player-1-card" class="player-card player-card-one">
+                    <span class="piece-marker red-piece" aria-hidden="true"></span>
+                    <div>
+                        <strong id="player-1-name">Jogador 1</strong>
+                        <span>Jogador 1 · Vermelho</span>
+                    </div>
+                    <span class="you-label">Você</span>
+                </article>
+
+                <span class="versus" aria-hidden="true">VS</span>
+
+                <article id="player-2-card" class="player-card player-card-two">
+                    <span class="piece-marker yellow-piece" aria-hidden="true"></span>
+                    <div>
+                        <strong id="player-2-name">Aguardando...</strong>
+                        <span>Jogador 2 · Amarelo</span>
+                    </div>
+                    <span class="you-label">Você</span>
+                </article>
+            </div>
+
+            <p id="game-status" class="game-status status-waiting" aria-live="polite">
+                Aguardando início da partida.
+            </p>
+
+            <div class="board-area">
+                <div id="board" aria-label="Tabuleiro do Connect Four"></div>
+            </div>
+
+            <button
+                id="rematch-button"
+                class="button button-rematch"
+                type="button"
+                hidden
+            >
+                Solicitar revanche
+            </button>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -5,6 +5,8 @@ const createRoomButton = document.getElementById("create-room-button");
 const joinRoomButton = document.getElementById("join-room-button");
 const roomStatusElement = document.getElementById("room-status");
 const gameStatusElement = document.getElementById("game-status");
+const timerValueElement = document.getElementById("timer-value");
+const timerFillElement = document.getElementById("timer-fill");
 const rematchButton = document.getElementById("rematch-button");
 const leaveRoomButton = document.getElementById("leave-room-button");
 const boardElement = document.getElementById("board");
@@ -16,10 +18,16 @@ const player1NameElement = document.getElementById("player-1-name");
 const player2NameElement = document.getElementById("player-2-name");
 const player1Card = document.getElementById("player-1-card");
 const player2Card = document.getElementById("player-2-card");
+const chatMessagesElement = document.getElementById("chat-messages");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
 
 let playerNumber = null;
 let gameActive = false;
 let rematchRequested = false;
+let timerInterval = null;
+let turnDeadlineMs = null;
+let turnTimeLimit = 30;
 const emptyBoard = Array.from({ length: 6 }, () => Array(7).fill(0));
 
 const socket = new WebSocket("ws://localhost:8765");
@@ -44,6 +52,11 @@ function updatePlayerIdentity() {
     player2Card.classList.toggle("is-you", playerNumber === 2);
 }
 
+function clearChat() {
+    chatMessagesElement.replaceChildren();
+    chatInput.value = "";
+}
+
 function showGamePanel(roomCode) {
     lobbyPanel.hidden = true;
     gamePanel.hidden = false;
@@ -56,6 +69,55 @@ function setBoardAvailability(isActive) {
     boardElement.classList.toggle("board-disabled", !isActive);
 }
 
+function clearTurnTimer() {
+    if (timerInterval !== null) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+
+    turnDeadlineMs = null;
+    timerValueElement.textContent = "--";
+    timerFillElement.style.width = "0%";
+}
+
+function updateTurnTimerDisplay() {
+    if (turnDeadlineMs === null) {
+        return;
+    }
+
+    const remainingMs = Math.max(0, turnDeadlineMs - Date.now());
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+    const percentage = Math.max(
+        0,
+        Math.min(100, (remainingMs / (turnTimeLimit * 1000)) * 100),
+    );
+
+    timerValueElement.textContent = `${remainingSeconds}s`;
+    timerFillElement.style.width = `${percentage}%`;
+
+    if (remainingMs <= 0 && timerInterval !== null) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+}
+
+function applyTurnTimer(data) {
+    if (data.status !== "playing" || typeof data.turn_deadline !== "number") {
+        clearTurnTimer();
+        return;
+    }
+
+    turnDeadlineMs = data.turn_deadline * 1000;
+    turnTimeLimit = data.turn_time_limit || 30;
+
+    if (timerInterval !== null) {
+        clearInterval(timerInterval);
+    }
+
+    updateTurnTimerDisplay();
+    timerInterval = setInterval(updateTurnTimerDisplay, 250);
+}
+
 function returnToLobby() {
     playerNumber = null;
     gameActive = false;
@@ -65,6 +127,8 @@ function returnToLobby() {
     player1NameElement.textContent = "Jogador 1";
     player2NameElement.textContent = "Aguardando...";
     updatePlayerIdentity();
+    clearChat();
+    clearTurnTimer();
     renderBoard(emptyBoard);
     setBoardAvailability(false);
     setGameStatus("Aguardando início da partida.", "status-waiting");
@@ -77,6 +141,24 @@ function returnToLobby() {
     setNotice("");
 }
 
+function renderChatMessage(data) {
+    const messageItem = document.createElement("div");
+    messageItem.className = "chat-message";
+    messageItem.classList.add(data.player === playerNumber ? "chat-mine" : "chat-other");
+
+    const author = document.createElement("strong");
+    author.textContent = data.player === playerNumber
+        ? "Você"
+        : data.player_name || `Jogador ${data.player}`;
+
+    const body = document.createElement("p");
+    body.textContent = data.message;
+
+    messageItem.append(author, body);
+    chatMessagesElement.appendChild(messageItem);
+    chatMessagesElement.scrollTop = chatMessagesElement.scrollHeight;
+}
+
 socket.onopen = () => {
     setConnectionStatus("Conectado", "status-connected");
 };
@@ -87,6 +169,8 @@ socket.onmessage = (event) => {
     if (data.type === "room_created") {
         playerNumber = data.player_number;
         rematchButton.hidden = true;
+        clearChat();
+        clearTurnTimer();
         player1NameElement.textContent = playerNameInput.value.trim() || "Jogador 1";
         player2NameElement.textContent = "Aguardando...";
         showGamePanel(data.room_code);
@@ -96,6 +180,8 @@ socket.onmessage = (event) => {
     } else if (data.type === "room_joined") {
         playerNumber = data.player_number;
         rematchButton.hidden = true;
+        clearChat();
+        clearTurnTimer();
         player2NameElement.textContent = playerNameInput.value.trim() || "Jogador 2";
         showGamePanel(data.room_code);
         setNotice(`Você entrou na sala ${data.room_code}.`, "success");
@@ -112,6 +198,7 @@ socket.onmessage = (event) => {
         gameActive = data.status === "playing";
         rematchButton.hidden = true;
         setBoardAvailability(gameActive);
+        applyTurnTimer(data);
 
         const turnMessage = data.turn === playerNumber
             ? "Sua vez!"
@@ -120,9 +207,12 @@ socket.onmessage = (event) => {
             `Vez do Jogador ${data.turn} - ${turnMessage}`,
             data.turn === playerNumber ? "status-turn" : "status-waiting",
         );
+    } else if (data.type === "chat_message") {
+        renderChatMessage(data);
     } else if (data.type === "game_over") {
         renderBoard(data.board);
         gameActive = false;
+        clearTurnTimer();
         setBoardAvailability(false);
         rematchRequested = false;
         rematchButton.hidden = false;
@@ -158,6 +248,8 @@ socket.onmessage = (event) => {
         renderBoard(data.board);
         gameActive = data.status === "playing";
         setBoardAvailability(gameActive);
+        applyTurnTimer(data);
+        clearChat();
         rematchRequested = false;
         rematchButton.hidden = true;
         rematchButton.disabled = false;
@@ -177,6 +269,8 @@ socket.onmessage = (event) => {
         gameActive = false;
         renderBoard(emptyBoard);
         setBoardAvailability(false);
+        clearTurnTimer();
+        clearChat();
         rematchRequested = false;
         rematchButton.hidden = true;
         if (playerNumber === 1) {
@@ -198,6 +292,7 @@ socket.onmessage = (event) => {
 
 socket.onclose = () => {
     gameActive = false;
+    clearTurnTimer();
     setBoardAvailability(false);
     rematchButton.hidden = true;
     setConnectionStatus("Desconectado", "status-disconnected");
@@ -257,6 +352,29 @@ boardElement.addEventListener("click", (event) => {
     );
 });
 
+chatForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    if (socket.readyState !== WebSocket.OPEN || playerNumber === null) {
+        setNotice("WebSocket não está conectado.", "error");
+        return;
+    }
+
+    const message = chatInput.value.trim();
+
+    if (!message) {
+        return;
+    }
+
+    socket.send(
+        JSON.stringify({
+            type: "chat_message",
+            message,
+        }),
+    );
+    chatInput.value = "";
+});
+
 rematchButton.addEventListener("click", () => {
     if (
         socket.readyState !== WebSocket.OPEN ||
@@ -283,6 +401,7 @@ leaveRoomButton.addEventListener("click", () => {
 
 renderBoard(emptyBoard);
 setBoardAvailability(false);
+clearTurnTimer();
 
 joinRoomButton.addEventListener("click", () => {
     if (socket.readyState !== WebSocket.OPEN) {

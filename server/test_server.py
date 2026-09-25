@@ -1,17 +1,24 @@
+import asyncio
 import json
 import unittest
 from unittest.mock import patch
 
 from server.game import PLAYER_1, PLAYER_2, ROWS, create_board
 from server.server import (
+    CHAT_MAX_LENGTH,
+    cancel_all_timers,
     create_room,
     find_player_room,
     generate_room_code,
+    handle_chat_message,
     handle_leave_room,
     handle_move,
     handle_rematch_request,
+    handle_turn_timeout,
+    join_room,
     remove_disconnected_player,
     rooms,
+    start_turn_timer_locked,
 )
 
 
@@ -23,11 +30,51 @@ class FakeWebSocket:
         self.messages.append(json.loads(message))
 
 
+async def cleanup_rooms():
+    cancel_all_timers()
+    await asyncio.sleep(0)
+    rooms.clear()
+
+
+def build_test_room(player1, player2=None, status="playing"):
+    players = [
+        {
+            "name": "Gustavo",
+            "websocket": player1,
+            "player_number": PLAYER_1,
+        }
+    ]
+
+    if player2 is not None:
+        players.append(
+            {
+                "name": "João",
+                "websocket": player2,
+                "player_number": PLAYER_2,
+            }
+        )
+
+    return {
+        "code": "TEST",
+        "players": players,
+        "board": create_board(),
+        "turn": PLAYER_1,
+        "status": status,
+        "rematch_requests": set(),
+        "next_starting_player": PLAYER_2,
+        "turn_time_limit": 30,
+        "turn_deadline": None,
+        "timer_task": None,
+        "timer_version": 0,
+    }
+
+
 class TestRoomCode(unittest.TestCase):
     def setUp(self):
         rooms.clear()
 
     def tearDown(self):
+        cancel_all_timers()
         rooms.clear()
 
     def test_room_code_has_four_characters(self):
@@ -45,6 +92,207 @@ class TestRoomCode(unittest.TestCase):
         mock_choices.side_effect = [list("ABCD"), list("EFGH")]
 
         self.assertEqual(generate_room_code(), "EFGH")
+
+
+class TestChatIntegration(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        rooms.clear()
+        self.player1 = FakeWebSocket()
+        self.player2 = FakeWebSocket()
+        self.player3 = FakeWebSocket()
+        self.player4 = FakeWebSocket()
+        self.room = build_test_room(self.player1, self.player2)
+        self.other_room = {
+            **build_test_room(self.player3, self.player4),
+            "code": "OTHR",
+        }
+        rooms["TEST"] = self.room
+        rooms["OTHR"] = self.other_room
+
+    async def asyncTearDown(self):
+        await cleanup_rooms()
+
+    async def test_valid_chat_message_goes_to_players_in_same_room(self):
+        await handle_chat_message(self.player1, {"message": " Boa jogada! "})
+
+        self.assertEqual(self.player1.messages[-1]["type"], "chat_message")
+        self.assertEqual(self.player1.messages[-1]["player"], PLAYER_1)
+        self.assertEqual(self.player1.messages[-1]["player_name"], "Gustavo")
+        self.assertEqual(self.player1.messages[-1]["message"], "Boa jogada!")
+        self.assertEqual(self.player2.messages[-1]["message"], "Boa jogada!")
+        self.assertEqual(self.player3.messages, [])
+        self.assertEqual(self.player4.messages, [])
+
+    async def test_empty_chat_message_is_rejected(self):
+        await handle_chat_message(self.player1, {"message": "   "})
+
+        self.assertEqual(self.player1.messages[-1]["type"], "error")
+        self.assertEqual(
+            self.player1.messages[-1]["message"],
+            "Mensagem do chat não pode estar vazia.",
+        )
+        self.assertEqual(self.player2.messages, [])
+
+    async def test_chat_message_over_limit_is_rejected(self):
+        await handle_chat_message(self.player1, {"message": "x" * (CHAT_MAX_LENGTH + 1)})
+
+        self.assertEqual(self.player1.messages[-1]["type"], "error")
+        self.assertIn(str(CHAT_MAX_LENGTH), self.player1.messages[-1]["message"])
+        self.assertEqual(self.player2.messages, [])
+
+    async def test_chat_message_is_not_sent_to_other_rooms(self):
+        await handle_chat_message(self.player3, {"message": "Oi da outra sala"})
+
+        self.assertEqual(self.player3.messages[-1]["type"], "chat_message")
+        self.assertEqual(self.player4.messages[-1]["message"], "Oi da outra sala")
+        self.assertEqual(self.player1.messages, [])
+        self.assertEqual(self.player2.messages, [])
+
+    async def test_chat_from_client_outside_room_is_rejected(self):
+        outsider = FakeWebSocket()
+
+        await handle_chat_message(outsider, {"message": "Oi"})
+
+        self.assertEqual(outsider.messages[-1]["type"], "error")
+        self.assertEqual(
+            outsider.messages[-1]["message"],
+            "Você não participa de uma sala.",
+        )
+
+
+class TestTurnTimerIntegration(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        rooms.clear()
+        self.player1 = FakeWebSocket()
+        self.player2 = FakeWebSocket()
+        self.room = build_test_room(self.player1, self.player2)
+        rooms["TEST"] = self.room
+
+    async def asyncTearDown(self):
+        await cleanup_rooms()
+
+    async def start_timer(self):
+        start_turn_timer_locked("TEST", self.room)
+
+    async def test_timer_starts_when_second_player_joins(self):
+        rooms.clear()
+        await create_room(self.player1, {"player_name": "Gustavo"})
+        room_code, room, _ = find_player_room(self.player1)
+
+        await join_room(
+            self.player2,
+            {"player_name": "João", "room_code": room_code},
+        )
+
+        self.assertEqual(room["status"], "playing")
+        self.assertIsNotNone(room["timer_task"])
+        self.assertFalse(room["timer_task"].done())
+        self.assertIsInstance(room["turn_deadline"], float)
+        self.assertEqual(self.player2.messages[0]["type"], "room_joined")
+        self.assertEqual(self.player1.messages[-1]["type"], "game_state")
+
+    async def test_timeout_changes_turn_without_automatic_move(self):
+        self.room["timer_version"] = 1
+        self.room["turn_deadline"] = 1.0
+
+        await handle_turn_timeout("TEST", 1, PLAYER_1, 0)
+
+        self.assertEqual(self.room["turn"], PLAYER_2)
+        self.assertEqual(self.room["board"], create_board())
+        self.assertEqual(self.player1.messages[-1]["type"], "game_state")
+        self.assertEqual(self.player2.messages[-1]["turn"], PLAYER_2)
+        self.assertIsNotNone(self.room["timer_task"])
+        self.assertFalse(self.room["timer_task"].done())
+
+    async def test_valid_move_invalidates_previous_timer(self):
+        await self.start_timer()
+        old_task = self.room["timer_task"]
+        old_version = self.room["timer_version"]
+
+        await handle_move(self.player1, {"column": 3})
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.room["turn"], PLAYER_2)
+        self.assertIsNot(self.room["timer_task"], old_task)
+        self.assertGreater(self.room["timer_version"], old_version)
+        self.assertTrue(old_task.done())
+
+    async def test_invalid_move_does_not_restart_timer(self):
+        await self.start_timer()
+        old_task = self.room["timer_task"]
+        old_version = self.room["timer_version"]
+
+        await handle_move(self.player1, {"column": 99})
+
+        self.assertIs(self.room["timer_task"], old_task)
+        self.assertEqual(self.room["timer_version"], old_version)
+        self.assertEqual(self.room["turn"], PLAYER_1)
+
+    async def test_game_over_cancels_timer(self):
+        for column in range(3):
+            self.room["board"][ROWS - 1][column] = PLAYER_1
+        await self.start_timer()
+        old_task = self.room["timer_task"]
+
+        await handle_move(self.player1, {"column": 3})
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.room["status"], "finished")
+        self.assertIsNone(self.room["timer_task"])
+        self.assertIsNone(self.room["turn_deadline"])
+        self.assertTrue(old_task.done())
+
+    async def test_rematch_starts_timer(self):
+        self.room["status"] = "finished"
+
+        await handle_rematch_request(self.player1)
+        await handle_rematch_request(self.player2)
+
+        self.assertEqual(self.room["status"], "playing")
+        self.assertIsNotNone(self.room["timer_task"])
+        self.assertFalse(self.room["timer_task"].done())
+        self.assertIsInstance(self.room["turn_deadline"], float)
+
+    async def test_disconnect_cleans_timer(self):
+        await self.start_timer()
+        old_task = self.room["timer_task"]
+
+        await remove_disconnected_player(self.player2)
+        await asyncio.sleep(0)
+
+        self.assertEqual(self.room["status"], "waiting")
+        self.assertIsNone(self.room["timer_task"])
+        self.assertIsNone(self.room["turn_deadline"])
+        self.assertTrue(old_task.done())
+
+    async def test_removed_room_does_not_leave_timer_task(self):
+        self.room["players"] = [self.room["players"][0]]
+        await self.start_timer()
+        old_task = self.room["timer_task"]
+
+        await handle_leave_room(self.player1)
+        await asyncio.sleep(0)
+
+        self.assertNotIn("TEST", rooms)
+        self.assertTrue(old_task.done())
+
+    async def test_move_and_timeout_race_keeps_consistent_state(self):
+        self.room["turn_time_limit"] = 30
+        self.room["timer_version"] = 1
+        self.room["turn_deadline"] = 1.0
+
+        await asyncio.gather(
+            handle_move(self.player1, {"column": 0}),
+            handle_turn_timeout("TEST", 1, PLAYER_1, 0),
+        )
+
+        pieces = sum(cell != 0 for row in self.room["board"] for cell in row)
+        self.assertIn(pieces, (0, 1))
+        self.assertEqual(self.room["turn"], PLAYER_2)
+        self.assertEqual(self.room["status"], "playing")
+        self.assertIsNotNone(self.room["timer_task"])
+        self.assertFalse(self.room["timer_task"].done())
+        self.assertLessEqual(pieces, 1)
 
 
 class TestMoveIntegration(unittest.IsolatedAsyncioTestCase):
@@ -75,6 +323,7 @@ class TestMoveIntegration(unittest.IsolatedAsyncioTestCase):
         rooms["TEST"] = self.room
 
     def tearDown(self):
+        cancel_all_timers()
         rooms.clear()
 
     async def test_move_out_of_turn_is_rejected(self):
@@ -184,6 +433,7 @@ class TestRematchIntegration(unittest.IsolatedAsyncioTestCase):
         rooms["TEST"] = self.room
 
     def tearDown(self):
+        cancel_all_timers()
         rooms.clear()
 
     async def test_rematch_during_active_game_is_rejected(self):
@@ -288,6 +538,7 @@ class TestLeaveRoomIntegration(unittest.IsolatedAsyncioTestCase):
         rooms["TEST"] = self.room
 
     def tearDown(self):
+        cancel_all_timers()
         rooms.clear()
 
     async def test_player_leaves_and_room_returns_to_waiting_state(self):

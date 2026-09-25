@@ -570,10 +570,53 @@ input:focus {
     color: var(--player-two);
 }
 
+.turn-timer {
+    width: min(690px, 100%);
+    margin: 0 auto 18px;
+    display: grid;
+    grid-template-columns: auto auto minmax(120px, 1fr);
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 900;
+    text-transform: uppercase;
+}
+
+.turn-timer strong {
+    min-width: 42px;
+    color: var(--player-two);
+    font-size: 1rem;
+}
+
+.timer-track {
+    height: 12px;
+    border: 1px solid var(--line-bright);
+    background: #030609;
+}
+
+.timer-track span {
+    width: 0;
+    height: 100%;
+    display: block;
+    background: var(--accent);
+    transition: width 160ms linear;
+}
+
+.play-area {
+    width: min(980px, 100%);
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, max-content) minmax(230px, 1fr);
+    align-items: start;
+    justify-content: center;
+    gap: clamp(14px, 2vw, 24px);
+}
+
 .board-area {
     width: max-content;
     max-width: 100%;
-    margin: 0 auto;
+    margin: 0;
 }
 
 .column-guide {
@@ -639,6 +682,93 @@ input:focus {
 
 .board-disabled .cell {
     cursor: default;
+}
+
+.chat-panel {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--accent);
+    background: #080d12;
+}
+
+.chat-heading {
+    min-height: 38px;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--line-bright);
+    font-size: 0.68rem;
+    font-weight: 900;
+}
+
+.chat-heading h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.84rem;
+}
+
+.chat-messages {
+    height: clamp(190px, 36vw, 342px);
+    padding: 10px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.chat-message {
+    max-width: 92%;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    background: #0d1823;
+    overflow-wrap: anywhere;
+}
+
+.chat-message strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--player-two);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+}
+
+.chat-message p {
+    margin: 0;
+    color: #dbe8f1;
+    font-size: 0.78rem;
+    line-height: 1.35;
+}
+
+.chat-mine {
+    align-self: flex-end;
+    border-color: var(--accent);
+    background: #09201e;
+}
+
+.chat-other {
+    align-self: flex-start;
+}
+
+.chat-form {
+    padding: 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.chat-form input {
+    min-height: 42px;
+}
+
+.chat-send-button {
+    width: auto;
+    min-height: 42px;
+    padding: 0 12px;
+    text-align: center;
 }
 
 .game-actions {
@@ -742,6 +872,27 @@ input:focus {
         margin: 0 4px;
     }
 
+    .turn-timer {
+        grid-template-columns: auto auto;
+    }
+
+    .timer-track {
+        grid-column: 1 / -1;
+    }
+
+    .play-area {
+        grid-template-columns: 1fr;
+        justify-items: center;
+    }
+
+    .chat-panel {
+        width: min(520px, 100%);
+    }
+
+    .chat-messages {
+        height: 210px;
+    }
+
     .game-actions {
         flex-direction: column;
         align-items: center;
@@ -762,6 +913,14 @@ input:focus {
 
     .button {
         padding: 0 12px;
+    }
+
+    .chat-form {
+        grid-template-columns: 1fr;
+    }
+
+    .chat-send-button {
+        width: 100%;
     }
 }
 

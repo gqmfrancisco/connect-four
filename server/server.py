@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import string
+import time
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -11,6 +12,9 @@ try:
 except ImportError:
     from game import COLS, check_winner, create_board, is_draw, is_valid_move, make_move
 
+
+TURN_TIME_LIMIT = 30
+CHAT_MAX_LENGTH = 200
 
 rooms = {}
 rooms_lock = asyncio.Lock()
@@ -31,6 +35,71 @@ def find_player_room(websocket):
     return None, None, None
 
 
+def create_room_state(room_code, player):
+    return {
+        "code": room_code,
+        "players": [player],
+        "board": create_board(),
+        "turn": 1,
+        "status": "waiting",
+        "rematch_requests": set(),
+        "next_starting_player": 2,
+        "turn_time_limit": TURN_TIME_LIMIT,
+        "turn_deadline": None,
+        "timer_task": None,
+        "timer_version": 0,
+    }
+
+
+def ensure_timer_fields(room):
+    room.setdefault("turn_time_limit", TURN_TIME_LIMIT)
+    room.setdefault("turn_deadline", None)
+    room.setdefault("timer_task", None)
+    room.setdefault("timer_version", 0)
+
+
+def cancel_turn_timer_locked(room):
+    ensure_timer_fields(room)
+    timer_task = room.get("timer_task")
+
+    if timer_task is not None and not timer_task.done():
+        timer_task.cancel()
+
+    room["timer_task"] = None
+    room["timer_version"] += 1
+    room["turn_deadline"] = None
+
+
+def start_turn_timer_locked(room_code, room, cancel_existing=True):
+    ensure_timer_fields(room)
+
+    if cancel_existing:
+        timer_task = room.get("timer_task")
+        if timer_task is not None and not timer_task.done():
+            timer_task.cancel()
+
+    room["timer_version"] += 1
+    timer_version = room["timer_version"]
+    turn_player = room["turn"]
+    time_limit = room["turn_time_limit"]
+    room["turn_deadline"] = time.time() + time_limit
+    room["timer_task"] = asyncio.create_task(
+        handle_turn_timeout(room_code, timer_version, turn_player, time_limit)
+    )
+    print(f"[TIMER] Sala {room_code}: jogador {turn_player} tem {time_limit}s.")
+
+
+def cancel_all_timers():
+    for room in rooms.values():
+        ensure_timer_fields(room)
+        timer_task = room.get("timer_task")
+        if timer_task is not None and not timer_task.done():
+            timer_task.cancel()
+        room["timer_task"] = None
+        room["turn_deadline"] = None
+        room["timer_version"] += 1
+
+
 async def send_json(websocket, data):
     await websocket.send(json.dumps(data, ensure_ascii=False))
 
@@ -48,12 +117,49 @@ async def broadcast(players, message):
 
 
 def build_game_state(room):
+    ensure_timer_fields(room)
     return {
         "type": "game_state",
         "board": [row[:] for row in room["board"]],
         "turn": room["turn"],
         "status": room["status"],
+        "turn_time_limit": room["turn_time_limit"],
+        "turn_deadline": room["turn_deadline"],
     }
+
+
+async def handle_turn_timeout(room_code, timer_version, expired_player, time_limit):
+    try:
+        await asyncio.sleep(time_limit)
+    except asyncio.CancelledError:
+        return
+
+    players_to_notify = None
+    game_state = None
+
+    async with rooms_lock:
+        room = rooms.get(room_code)
+
+        if room is None:
+            return
+
+        ensure_timer_fields(room)
+        if (
+            room["status"] != "playing"
+            or len(room["players"]) != 2
+            or room["turn"] != expired_player
+            or room["timer_version"] != timer_version
+        ):
+            return
+
+        room["turn"] = 2 if expired_player == 1 else 1
+        room["timer_task"] = None
+        print(f"[TIMER] Sala {room_code}: tempo do jogador {expired_player} expirou.")
+        start_turn_timer_locked(room_code, room, cancel_existing=False)
+        players_to_notify = list(room["players"])
+        game_state = build_game_state(room)
+
+    await broadcast(players_to_notify, game_state)
 
 
 async def create_room(websocket, data):
@@ -70,26 +176,20 @@ async def create_room(websocket, data):
             response = {"type": "error", "message": "Você já participa de uma sala."}
         else:
             room_code = generate_room_code()
-            rooms[room_code] = {
-                "code": room_code,
-                "players": [
-                    {
-                        "name": player_name,
-                        "websocket": websocket,
-                        "player_number": 1,
-                    }
-                ],
-                "board": create_board(),
-                "turn": 1,
-                "status": "waiting",
-                "rematch_requests": set(),
-                "next_starting_player": 2,
-            }
+            rooms[room_code] = create_room_state(
+                room_code,
+                {
+                    "name": player_name,
+                    "websocket": websocket,
+                    "player_number": 1,
+                },
+            )
             response = {
                 "type": "room_created",
                 "room_code": room_code,
                 "player_number": 1,
             }
+            print(f"[ROOM] Sala {room_code} criada por jogador 1.")
 
     await send_json(websocket, response)
 
@@ -122,6 +222,7 @@ async def join_room(websocket, data):
             response = {"type": "error", "message": "Sala cheia."}
         else:
             room = rooms[room_code]
+            ensure_timer_fields(room)
             used_numbers = {player["player_number"] for player in room["players"]}
             player_number = 1 if 1 not in used_numbers else 2
             room["players"].append(
@@ -132,6 +233,7 @@ async def join_room(websocket, data):
                 }
             )
             room["status"] = "playing"
+            start_turn_timer_locked(room_code, room)
 
             response = {
                 "type": "room_joined",
@@ -152,6 +254,7 @@ async def join_room(websocket, data):
                 "turn": room["turn"],
             }
             game_state = build_game_state(room)
+            print(f"[ROOM] Jogador {player_number} entrou na sala {room_code}.")
 
     await send_json(websocket, response)
 
@@ -164,9 +267,10 @@ async def handle_move(websocket, data):
     error_message = None
     players_to_notify = None
     game_message = None
+    room_code = None
 
     async with rooms_lock:
-        _, room, player = find_player_room(websocket)
+        room_code, room, player = find_player_room(websocket)
 
         if room is None:
             error_message = "Você não participa de uma sala."
@@ -179,6 +283,7 @@ async def handle_move(websocket, data):
         elif room["turn"] != player["player_number"]:
             error_message = "Não é a sua vez."
         else:
+            ensure_timer_fields(room)
             column = data.get("column")
 
             if type(column) is not int or not 0 <= column < COLS:
@@ -189,31 +294,79 @@ async def handle_move(websocket, data):
                 player_number = player["player_number"]
                 make_move(room["board"], column, player_number)
                 players_to_notify = list(room["players"])
+                print(f"[GAME] Sala {room_code}: jogador {player_number} -> coluna {column}.")
 
                 if check_winner(room["board"], player_number):
                     room["status"] = "finished"
+                    cancel_turn_timer_locked(room)
                     game_message = {
                         "type": "game_over",
                         "result": "win",
                         "winner": player_number,
                         "board": [row[:] for row in room["board"]],
                     }
+                    print(f"[GAME] Sala {room_code}: jogador {player_number} venceu.")
                 elif is_draw(room["board"]):
                     room["status"] = "finished"
+                    cancel_turn_timer_locked(room)
                     game_message = {
                         "type": "game_over",
                         "result": "draw",
                         "winner": None,
                         "board": [row[:] for row in room["board"]],
                     }
+                    print(f"[GAME] Sala {room_code}: empate.")
                 else:
                     room["turn"] = 2 if player_number == 1 else 1
+                    start_turn_timer_locked(room_code, room)
                     game_message = build_game_state(room)
 
     if error_message is not None:
         await send_error(websocket, error_message)
+        if room_code is not None:
+            print(f"[GAME] Sala {room_code}: jogada rejeitada ({error_message})")
     else:
         await broadcast(players_to_notify, game_message)
+
+
+async def handle_chat_message(websocket, data):
+    error_message = None
+    players_to_notify = None
+    chat_message = None
+
+    async with rooms_lock:
+        room_code, room, player = find_player_room(websocket)
+
+        if room is None:
+            error_message = "Você não participa de uma sala."
+        else:
+            raw_message = data.get("message")
+
+            if not isinstance(raw_message, str):
+                error_message = "Mensagem do chat inválida."
+            else:
+                message = raw_message.strip()
+
+                if not message:
+                    error_message = "Mensagem do chat não pode estar vazia."
+                elif len(message) > CHAT_MAX_LENGTH:
+                    error_message = f"Mensagem do chat deve ter no máximo {CHAT_MAX_LENGTH} caracteres."
+                else:
+                    players_to_notify = list(room["players"])
+                    chat_message = {
+                        "type": "chat_message",
+                        "player": player["player_number"],
+                        "player_name": player["name"],
+                        "message": message,
+                    }
+                    print(
+                        f"[CHAT] Sala {room_code}: jogador {player['player_number']} enviou mensagem."
+                    )
+
+    if error_message is not None:
+        await send_error(websocket, error_message)
+    else:
+        await broadcast(players_to_notify, chat_message)
 
 
 async def handle_rematch_request(websocket):
@@ -222,7 +375,7 @@ async def handle_rematch_request(websocket):
     rematch_message = None
 
     async with rooms_lock:
-        _, room, player = find_player_room(websocket)
+        room_code, room, player = find_player_room(websocket)
 
         if room is None:
             error_message = "Você não participa de uma sala."
@@ -233,6 +386,7 @@ async def handle_rematch_request(websocket):
         elif player["player_number"] in room["rematch_requests"]:
             error_message = "Você já solicitou revanche."
         else:
+            ensure_timer_fields(room)
             room["rematch_requests"].add(player["player_number"])
             players_to_notify = list(room["players"])
 
@@ -242,17 +396,24 @@ async def handle_rematch_request(websocket):
                 room["next_starting_player"] = 1 if room["turn"] == 2 else 2
                 room["status"] = "playing"
                 room["rematch_requests"].clear()
+                start_turn_timer_locked(room_code, room)
                 rematch_message = {
                     "type": "rematch_started",
                     "board": [row[:] for row in room["board"]],
                     "turn": room["turn"],
                     "status": room["status"],
+                    "turn_time_limit": room["turn_time_limit"],
+                    "turn_deadline": room["turn_deadline"],
                 }
+                print(f"[GAME] Sala {room_code}: revanche iniciada.")
             else:
                 rematch_message = {
                     "type": "rematch_status",
                     "accepted_players": sorted(room["rematch_requests"]),
                 }
+                print(
+                    f"[GAME] Sala {room_code}: jogador {player['player_number']} pediu revanche."
+                )
 
     if error_message is not None:
         await send_error(websocket, error_message)
@@ -267,15 +428,19 @@ def remove_player_from_room(websocket):
 
     room["players"].remove(player)
     room["rematch_requests"].clear()
+    print(f"[ROOM] Jogador {player['player_number']} saiu da sala {room_code}.")
 
     if room["players"]:
+        cancel_turn_timer_locked(room)
         room["board"] = create_board()
         room["status"] = "waiting"
         room["turn"] = 1
         room["next_starting_player"] = 2
         return list(room["players"])
 
+    cancel_turn_timer_locked(room)
     del rooms[room_code]
+    print(f"[ROOM] Sala {room_code} removida.")
     return []
 
 
@@ -310,11 +475,11 @@ async def remove_disconnected_player(websocket):
 
 
 async def handle_connection(websocket):
-    print("Cliente conectado.")
+    print("[WS] Cliente conectado.")
 
     try:
         async for message in websocket:
-            print(f"Mensagem recebida: {message}")
+            print(f"[WS] Mensagem recebida: {message}")
 
             try:
                 data = json.loads(message)
@@ -332,6 +497,8 @@ async def handle_connection(websocket):
                 await join_room(websocket, data)
             elif data["type"] == "move":
                 await handle_move(websocket, data)
+            elif data["type"] == "chat_message":
+                await handle_chat_message(websocket, data)
             elif data["type"] == "rematch_request":
                 await handle_rematch_request(websocket)
             elif data["type"] == "leave_room":
@@ -354,12 +521,12 @@ async def handle_connection(websocket):
         pass
     finally:
         await remove_disconnected_player(websocket)
-        print("Cliente desconectado.")
+        print("[WS] Cliente desconectado.")
 
 
 async def main():
     async with websockets.serve(handle_connection, "localhost", 8765):
-        print("Servidor WebSocket iniciado em ws://localhost:8765")
+        print("[WS] Servidor WebSocket iniciado em ws://localhost:8765")
         await asyncio.Future()
 
 
@@ -367,4 +534,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        cancel_all_timers()

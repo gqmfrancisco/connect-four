@@ -4,7 +4,10 @@ from unittest.mock import patch
 
 from server.game import PLAYER_1, PLAYER_2, ROWS, create_board
 from server.server import (
+    create_room,
+    find_player_room,
     generate_room_code,
+    handle_leave_room,
     handle_move,
     handle_rematch_request,
     remove_disconnected_player,
@@ -254,6 +257,88 @@ class TestRematchIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.player1.messages[-1]["type"], "error")
         self.assertEqual(self.room["rematch_requests"], set())
+
+
+class TestLeaveRoomIntegration(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        rooms.clear()
+        self.player1 = FakeWebSocket()
+        self.player2 = FakeWebSocket()
+        self.room = {
+            "code": "TEST",
+            "players": [
+                {
+                    "name": "Gustavo",
+                    "websocket": self.player1,
+                    "player_number": PLAYER_1,
+                },
+                {
+                    "name": "João",
+                    "websocket": self.player2,
+                    "player_number": PLAYER_2,
+                },
+            ],
+            "board": create_board(),
+            "turn": PLAYER_2,
+            "status": "finished",
+            "rematch_requests": {PLAYER_1},
+            "next_starting_player": PLAYER_1,
+        }
+        self.room["board"][ROWS - 1][0] = PLAYER_1
+        rooms["TEST"] = self.room
+
+    def tearDown(self):
+        rooms.clear()
+
+    async def test_player_leaves_and_room_returns_to_waiting_state(self):
+        await handle_leave_room(self.player1)
+
+        room_code, _, _ = find_player_room(self.player1)
+        self.assertIsNone(room_code)
+        self.assertEqual(self.player1.messages[-1]["type"], "left_room")
+        self.assertEqual(len(self.room["players"]), 1)
+        self.assertIs(self.room["players"][0]["websocket"], self.player2)
+        self.assertEqual(self.room["status"], "waiting")
+        self.assertEqual(self.room["turn"], PLAYER_1)
+        self.assertEqual(self.room["board"], create_board())
+        self.assertEqual(self.room["next_starting_player"], PLAYER_2)
+        self.assertEqual(self.room["rematch_requests"], set())
+        self.assertEqual(self.player2.messages[-1]["type"], "player_disconnected")
+        self.assertEqual(
+            self.player2.messages[-1]["message"],
+            "O outro jogador saiu da sala.",
+        )
+
+    async def test_last_player_leaving_removes_empty_room(self):
+        self.room["players"] = [self.room["players"][0]]
+
+        await handle_leave_room(self.player1)
+
+        self.assertNotIn("TEST", rooms)
+        self.assertEqual(self.player1.messages[-1]["type"], "left_room")
+
+    async def test_player_can_create_another_room_after_leaving(self):
+        await handle_leave_room(self.player1)
+
+        await create_room(self.player1, {"player_name": "Gustavo"})
+
+        new_room_code, new_room, player = find_player_room(self.player1)
+        self.assertIsNotNone(new_room_code)
+        self.assertIsNot(new_room, self.room)
+        self.assertEqual(player["name"], "Gustavo")
+        self.assertEqual(self.player1.messages[-1]["type"], "room_created")
+
+    async def test_leave_outside_room_returns_controlled_error(self):
+        outsider = FakeWebSocket()
+
+        await handle_leave_room(outsider)
+
+        self.assertEqual(outsider.messages[-1]["type"], "error")
+        self.assertEqual(
+            outsider.messages[-1]["message"],
+            "Você não participa de uma sala.",
+        )
+        self.assertIn("TEST", rooms)
 
 
 if __name__ == "__main__":

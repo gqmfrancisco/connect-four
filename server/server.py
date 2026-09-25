@@ -260,32 +260,53 @@ async def handle_rematch_request(websocket):
         await broadcast(players_to_notify, rematch_message)
 
 
-async def remove_disconnected_player(websocket):
-    players_to_notify = None
+def remove_player_from_room(websocket):
+    room_code, room, player = find_player_room(websocket)
+    if room_code is None:
+        return None
 
-    async with rooms_lock:
-        room_code, room, player = find_player_room(websocket)
-        if room_code is None:
-            return
+    room["players"].remove(player)
+    room["rematch_requests"].clear()
 
-        room["players"].remove(player)
-        room["rematch_requests"].clear()
+    if room["players"]:
+        room["board"] = create_board()
+        room["status"] = "waiting"
+        room["turn"] = 1
+        room["next_starting_player"] = 2
+        return list(room["players"])
 
-        if room["players"]:
-            room["status"] = "waiting"
-            room["turn"] = 1
-            players_to_notify = list(room["players"])
-        else:
-            del rooms[room_code]
+    del rooms[room_code]
+    return []
 
-    if players_to_notify:
+
+async def notify_player_left(players, message):
+    if players:
         await broadcast(
-            players_to_notify,
+            players,
             {
                 "type": "player_disconnected",
-                "message": "O outro jogador desconectou.",
+                "message": message,
             },
         )
+
+
+async def handle_leave_room(websocket):
+    async with rooms_lock:
+        players_to_notify = remove_player_from_room(websocket)
+
+    if players_to_notify is None:
+        await send_error(websocket, "Você não participa de uma sala.")
+        return
+
+    await send_json(websocket, {"type": "left_room"})
+    await notify_player_left(players_to_notify, "O outro jogador saiu da sala.")
+
+
+async def remove_disconnected_player(websocket):
+    async with rooms_lock:
+        players_to_notify = remove_player_from_room(websocket)
+
+    await notify_player_left(players_to_notify, "O outro jogador desconectou.")
 
 
 async def handle_connection(websocket):
@@ -313,6 +334,8 @@ async def handle_connection(websocket):
                 await handle_move(websocket, data)
             elif data["type"] == "rematch_request":
                 await handle_rematch_request(websocket)
+            elif data["type"] == "leave_room":
+                await handle_leave_room(websocket)
             elif data["type"] == "message":
                 content = data.get("content")
                 if not isinstance(content, str):

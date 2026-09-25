@@ -7,81 +7,97 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <main class="app-shell">
-        <header class="app-header">
-            <p class="game-label">Jogo multiplayer</p>
-            <h1>CONNECT FOUR</h1>
-            <p class="subtitle">Multiplayer em tempo real com WebSocket</p>
+    <main class="arcade-screen">
+        <div class="screen-corner screen-corner-top" aria-hidden="true"></div>
 
+        <div class="title-block">
+            <p class="game-label">Arcade network game</p>
+            <h1>CONNECT <span>4</span></h1>
+            <p class="subtitle">MULTIPLAYER // WEBSOCKET</p>
+        </div>
+
+        <div class="system-strip">
+            <span class="cabinet-id">UNIT // C4-01</span>
             <div class="connection-badge status-connecting" id="connection-badge">
                 <span class="status-dot" aria-hidden="true"></span>
+                <span class="status-prefix">WS //</span>
                 <span id="connection-status">Conectando...</span>
             </div>
-        </header>
+        </div>
 
         <p id="room-status" class="notice" aria-live="polite"></p>
 
         <section id="lobby-panel" class="lobby-panel" aria-labelledby="lobby-title">
-            <h2 id="lobby-title">Entrar na partida</h2>
-
-            <div class="field-group">
-                <label for="player-name">Nome</label>
-                <input
-                    id="player-name"
-                    type="text"
-                    placeholder="Digite seu nome"
-                    autocomplete="name"
-                >
+            <div class="section-heading">
+                <span aria-hidden="true">01</span>
+                <h2 id="lobby-title">SELECT GAME</h2>
+                <span aria-hidden="true">READY</span>
             </div>
 
-            <button id="create-room-button" class="button button-primary" type="button">
-                Criar sala
-            </button>
+            <div class="arcade-menu">
+                <div class="field-group">
+                    <label for="player-name">PLAYER NAME</label>
+                    <input
+                        id="player-name"
+                        type="text"
+                        placeholder="SEU NOME"
+                        autocomplete="name"
+                    >
+                </div>
 
-            <div class="divider" aria-hidden="true"><span>OU</span></div>
+                <button id="create-room-button" class="button button-primary" type="button">
+                    <span aria-hidden="true">&gt;</span> CREATE ROOM
+                </button>
 
-            <div class="field-group">
-                <label for="room-code">Código da sala</label>
-                <input
-                    id="room-code"
-                    class="room-code-input"
-                    type="text"
-                    maxlength="4"
-                    placeholder="ABCD"
-                    autocomplete="off"
-                >
+                <div class="divider" aria-hidden="true"><span>OR</span></div>
+
+                <div class="field-group">
+                    <label for="room-code">ROOM CODE</label>
+                    <input
+                        id="room-code"
+                        class="room-code-input"
+                        type="text"
+                        maxlength="4"
+                        placeholder="ABCD"
+                        autocomplete="off"
+                    >
+                </div>
+
+                <button id="join-room-button" class="button button-secondary" type="button">
+                    <span aria-hidden="true">&gt;</span> JOIN ROOM
+                </button>
             </div>
 
-            <button id="join-room-button" class="button button-secondary" type="button">
-                Entrar na sala
-            </button>
+            <p class="start-prompt" aria-hidden="true">PRESS START // CHOOSE A MODE</p>
         </section>
 
         <section id="game-panel" class="game-panel" aria-label="Partida" hidden>
             <div class="room-heading">
-                <span>Sala</span>
+                <span>ROOM //</span>
                 <strong id="room-code-display">----</strong>
             </div>
 
             <div class="players-row">
                 <article id="player-1-card" class="player-card player-card-one">
-                    <span class="piece-marker red-piece" aria-hidden="true"></span>
-                    <div>
-                        <strong id="player-1-name">Jogador 1</strong>
-                        <span>Jogador 1 · Vermelho</span>
+                    <div class="player-number">PLAYER 1</div>
+                    <strong id="player-1-name">Jogador 1</strong>
+                    <div class="player-color">
+                        <span class="piece-marker red-piece" aria-hidden="true"></span>
+                        RED
                     </div>
-                    <span class="you-label">Você</span>
+                    <span class="you-label">YOU</span>
                 </article>
 
                 <span class="versus" aria-hidden="true">VS</span>
 
                 <article id="player-2-card" class="player-card player-card-two">
-                    <span class="piece-marker yellow-piece" aria-hidden="true"></span>
-                    <div>
-                        <strong id="player-2-name">Aguardando...</strong>
-                        <span>Jogador 2 · Amarelo</span>
+                    <div class="player-number">PLAYER 2</div>
+                    <strong id="player-2-name">Aguardando...</strong>
+                    <div class="player-color">
+                        <span class="piece-marker yellow-piece" aria-hidden="true"></span>
+                        YELLOW
                     </div>
-                    <span class="you-label">Você</span>
+                    <span class="you-label">YOU</span>
                 </article>
             </div>
 
@@ -90,18 +106,33 @@
             </p>
 
             <div class="board-area">
+                <div class="column-guide" aria-hidden="true">
+                    <span>1</span><span>2</span><span>3</span><span>4</span>
+                    <span>5</span><span>6</span><span>7</span>
+                </div>
                 <div id="board" aria-label="Tabuleiro do Connect Four"></div>
             </div>
 
-            <button
-                id="rematch-button"
-                class="button button-rematch"
-                type="button"
-                hidden
-            >
-                Solicitar revanche
-            </button>
+            <div class="game-actions">
+                <button
+                    id="rematch-button"
+                    class="button button-rematch"
+                    type="button"
+                    hidden
+                >
+                    <span aria-hidden="true">&gt;</span> Solicitar revanche
+                </button>
+                <button id="leave-room-button" class="button button-leave" type="button">
+                    <span aria-hidden="true">&lt;</span> Voltar ao início
+                </button>
+            </div>
         </section>
+
+        <div class="cabinet-footer" aria-hidden="true">
+            <span>C4 SYSTEM</span>
+            <span>BUILD 01 // 2 PLAYERS</span>
+        </div>
+        <div class="screen-corner screen-corner-bottom" aria-hidden="true"></div>
     </main>
 
     <script src="app.js"></script>

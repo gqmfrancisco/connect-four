@@ -6,6 +6,7 @@ const joinRoomButton = document.getElementById("join-room-button");
 const roomStatusElement = document.getElementById("room-status");
 const gameStatusElement = document.getElementById("game-status");
 const rematchButton = document.getElementById("rematch-button");
+const leaveRoomButton = document.getElementById("leave-room-button");
 const boardElement = document.getElementById("board");
 const connectionBadge = document.getElementById("connection-badge");
 const lobbyPanel = document.getElementById("lobby-panel");
@@ -19,6 +20,7 @@ const player2Card = document.getElementById("player-2-card");
 let playerNumber = null;
 let gameActive = false;
 let rematchRequested = false;
+const emptyBoard = Array.from({ length: 6 }, () => Array(7).fill(0));
 
 const socket = new WebSocket("ws://localhost:8765");
 
@@ -45,12 +47,34 @@ function updatePlayerIdentity() {
 function showGamePanel(roomCode) {
     lobbyPanel.hidden = true;
     gamePanel.hidden = false;
+    leaveRoomButton.disabled = false;
     roomCodeDisplay.textContent = roomCode;
     updatePlayerIdentity();
 }
 
 function setBoardAvailability(isActive) {
     boardElement.classList.toggle("board-disabled", !isActive);
+}
+
+function returnToLobby() {
+    playerNumber = null;
+    gameActive = false;
+    rematchRequested = false;
+    roomCodeInput.value = "";
+    roomCodeDisplay.textContent = "----";
+    player1NameElement.textContent = "Jogador 1";
+    player2NameElement.textContent = "Aguardando...";
+    updatePlayerIdentity();
+    renderBoard(emptyBoard);
+    setBoardAvailability(false);
+    setGameStatus("Aguardando início da partida.", "status-waiting");
+    rematchButton.hidden = true;
+    rematchButton.disabled = false;
+    rematchButton.textContent = "Solicitar revanche";
+    leaveRoomButton.disabled = false;
+    gamePanel.hidden = true;
+    lobbyPanel.hidden = false;
+    setNotice("");
 }
 
 socket.onopen = () => {
@@ -147,14 +171,23 @@ socket.onmessage = (event) => {
             `Vez do Jogador ${data.turn} - ${turnMessage}`,
             data.turn === playerNumber ? "status-turn" : "status-waiting",
         );
+    } else if (data.type === "left_room") {
+        returnToLobby();
     } else if (data.type === "player_disconnected") {
         gameActive = false;
+        renderBoard(emptyBoard);
         setBoardAvailability(false);
         rematchRequested = false;
         rematchButton.hidden = true;
+        if (playerNumber === 1) {
+            player2NameElement.textContent = "Aguardando...";
+        } else {
+            player1NameElement.textContent = "Aguardando...";
+        }
         setNotice(data.message, "error");
         setGameStatus("Partida interrompida.", "status-alert");
     } else if (data.type === "error") {
+        leaveRoomButton.disabled = false;
         if (!gameActive && !rematchButton.hidden) {
             rematchRequested = false;
             rematchButton.disabled = false;
@@ -238,7 +271,16 @@ rematchButton.addEventListener("click", () => {
     socket.send(JSON.stringify({ type: "rematch_request" }));
 });
 
-const emptyBoard = Array.from({ length: 6 }, () => Array(7).fill(0));
+leaveRoomButton.addEventListener("click", () => {
+    if (socket.readyState !== WebSocket.OPEN) {
+        setNotice("WebSocket não está conectado.", "error");
+        return;
+    }
+
+    leaveRoomButton.disabled = true;
+    socket.send(JSON.stringify({ type: "leave_room" }));
+});
+
 renderBoard(emptyBoard);
 setBoardAvailability(false);
 
